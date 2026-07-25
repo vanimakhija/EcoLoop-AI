@@ -1,0 +1,82 @@
+"""
+single_agent_loop.py — the SIMPLEST possible closed loop: one agent,
+one decision per cycle. Get this working before attempting graph.py
+(the 4-agent + supervisor version). Same MCP tools, same LLM — just
+one reasoning step instead of five.
+
+If your local model struggles with native tool-calling, use the
+JSON-mode fallback shown at the bottom of this file instead of
+llm.bind_tools().
+"""
+
+import sys
+import os
+import json
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp_server"))
+
+from langchain_ollama import ChatOllama
+from mcp_server.tools import (
+    tool_get_building_state,
+    tool_set_hvac_setpoint,
+    tool_run_simulation,
+    tool_log_decision,
+)
+
+MODEL_NAME = "qwen2.5:7b"
+N_CYCLES = 5
+TARGET_TEMP_RANGE = (21.0, 24.0)  # comfortable cooling setpoint band, Celsius
+
+llm = ChatOllama(model=MODEL_NAME, format="json")  # JSON mode: reliable with small local models
+
+
+SYSTEM_PROMPT = """You are an HVAC control agent for an office building.
+You will be given the current building state (zone temperatures, humidity, energy demand).
+Decide a new cooling setpoint for zone 'Core_mid', staying within {low}-{high} Celsius
+to preserve occupant comfort, while minimizing energy use where possible.
+
+Respond with ONLY valid JSON in this exact format, no other text:
+{{"new_temp": <float>, "rationale": "<one sentence reason>"}}
+""".format(low=TARGET_TEMP_RANGE[0], high=TARGET_TEMP_RANGE[1])
+
+
+def decide(state: dict) -> dict:
+    user_msg = f"Current building state: {json.dumps(state, default=str)}"
+    response = llm.invoke([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_msg},
+    ])
+    try:
+        decision = json.loads(response.content)
+    except json.JSONDecodeError:
+        # Fallback if the model didn't return clean JSON — safe default
+        print("WARNING: model returned non-JSON, using fallback decision.")
+        decision = {"new_temp": 22.5, "rationale": "fallback: model output was not valid JSON"}
+    return decision
+
+
+def run_loop():
+    for cycle in range(N_CYCLES):
+        print(f"\n--- Cycle {cycle + 1}/{N_CYCLES} ---")
+
+        state = tool_get_building_state()
+        print("State:", state)
+
+        decision = decide(state)
+        print("Decision:", decision)
+
+        new_temp = float(decision.get("new_temp", 22.5))
+        new_temp = max(TARGET_TEMP_RANGE[0], min(TARGET_TEMP_RANGE[1], new_temp))  # clamp for safety
+
+        tool_set_hvac_setpoint("Core_mid", new_temp)
+        tool_log_decision("single_agent", decision.get("rationale", ""), f"set Core_mid to {new_temp}")
+
+        print("Re-running simulation...")
+        new_state = tool_run_simulation()
+        print("New state:", new_state)
+
+    print("\nLoop complete. Check data/results.db for the decision log.")
+
+
+if __name__ == "__main__":
+    run_loop()

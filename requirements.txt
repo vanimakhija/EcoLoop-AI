@@ -1,0 +1,7 @@
+eppy
+langgraph
+langchain-ollama
+mcp
+streamlit
+plotly
+pandas

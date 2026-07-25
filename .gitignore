@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+
+energyplus/output/
+energyplus/current_run/
+energyplus/test_run/
+energyplus/baseline_run/
+
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
