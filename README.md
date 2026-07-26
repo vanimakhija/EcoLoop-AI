@@ -72,7 +72,7 @@ docs/                      Architecture, production readiness, demo package
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Production readiness](docs/PRODUCTION_READINESS.md)
-- [Demo package](docs/DEMO_PREP.md)
+
 
 ## Scope and safety statement
 
