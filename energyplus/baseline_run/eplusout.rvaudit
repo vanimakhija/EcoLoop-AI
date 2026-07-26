@@ -1,0 +1,16 @@
+ ReadVarsESO
+ processing:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_pristine.rvi
+ input file:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusout.eso
+ output file:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusout.csv
+ getting all vars from:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusout.eso
+  number variables requested for output=          86
+ ReadVars Run Time=00hr 00min  0.12sec
+ ReadVarsESO program completed successfully.
+ ReadVarsESO
+ processing:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_pristine.mvi
+ input file:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusout.mtr
+ output file:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusmtr.csv
+ getting all vars from:C:\Users\Vans\Music\EcoLoop-AI\energyplus\baseline_run\eplusout.mtr
+  number variables requested for output=          36
+ ReadVars Run Time=00hr 00min  0.03sec
+ ReadVarsESO program completed successfully.

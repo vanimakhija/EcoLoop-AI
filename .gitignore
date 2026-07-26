@@ -1,12 +1,28 @@
-.venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
 
-energyplus/output/
+# Virtual environment
+.venv/
+venv/
+
+# EnergyPlus outputs
 energyplus/current_run/
-energyplus/test_run/
-energyplus/baseline_run/
+output/
 
+# Database (optional)
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.bak2
+
+# VS Code
 .vscode/
 
 # OS
