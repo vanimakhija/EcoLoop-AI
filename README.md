@@ -73,7 +73,7 @@ docs/                      Architecture, production readiness, demo package
 - [Architecture](docs/ARCHITECTURE.md)
 - [Production readiness](docs/PRODUCTION_READINESS.md)
 ## Video Working
-https://drive.google.com/file/d/1HgXlrjLc-05SrBuYZmCVX-r6-0lEjxqt/view?usp=sharing
+[https://drive.google.com/file/d/1HgXlrjLc-05SrBuYZmCVX-r6-0lEjxqt/view?usp=sharing](https://drive.google.com/file/d/14ohZaYZHDXAauPXYkY36IdXxD4hvujjI/view)
 
 
 ## Scope and safety statement
