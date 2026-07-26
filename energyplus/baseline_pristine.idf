@@ -532,27 +532,27 @@ Schedule:Compact,
     Through: 12/31,           !- Field 1
     For: Weekdays,            !- Field 2
     Until: 06:00,             !- Field 3
-    23.0,                     !- Field 4
+    26.7,                     !- Field 4
     Until: 22:00,             !- Field 5
-    23.0,                     !- Field 6
+    24.0,                     !- Field 6
     Until: 24:00,             !- Field 7
-    23.0,                     !- Field 8
+    26.7,                     !- Field 8
     For SummerDesignDay,      !- Field 9
     Until: 24:00,             !- Field 10
-    23.0,                     !- Field 11
+    24.0,                     !- Field 11
     For: Saturday,            !- Field 12
     Until: 06:00,             !- Field 13
-    23.0,                     !- Field 14
+    26.7,                     !- Field 14
     Until: 18:00,             !- Field 15
-    23.0,                     !- Field 16
+    24.0,                     !- Field 16
     Until: 24:00,             !- Field 17
-    23.0,                     !- Field 18
+    26.7,                     !- Field 18
     For: WinterDesignDay,     !- Field 19
     Until: 24:00,             !- Field 20
-    23.0,                     !- Field 21
+    26.7,                     !- Field 21
     For: AllOtherDays,        !- Field 22
     Until: 24:00,             !- Field 23
-    23.0;                     !- Field 24
+    26.7;                     !- Field 24
 
 Schedule:Compact,
     HTGSETP_SCH,              !- Name

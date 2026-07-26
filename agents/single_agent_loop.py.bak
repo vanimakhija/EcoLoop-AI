@@ -56,16 +56,6 @@ def decide(state: dict) -> dict:
 
 
 def run_loop():
-    # Ensure data/ dir exists for SQLite logging
-    os.makedirs(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"), exist_ok=True)
-
-    # Bootstrap: run initial simulation if no output CSV exists
-    csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "energyplus", "current_run", "eplusout.csv")
-    if not os.path.exists(csv_path):
-        print("No existing simulation output found. Running bootstrap simulation...")
-        tool_run_simulation()
-
     for cycle in range(N_CYCLES):
         print(f"\n--- Cycle {cycle + 1}/{N_CYCLES} ---")
 

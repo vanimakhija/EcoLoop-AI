@@ -71,61 +71,13 @@ def get_building_state(run_dir: str = RUN_DIR) -> dict:
         elif "zone air relative humidity" in col_lower:
             state.setdefault("zone_humidity", {})[col] = last_row[col]
         elif "electricity demand" in col_lower or "facility total electricity" in col_lower or "electricity:facility" in col_lower:
-            # EnergyPlus output is Electricity:Facility [J](Monthly).  Keep the
-            # legacy key for compatibility, and expose an unambiguous key for
-            # governed control and dashboard calculations.
-            # Some EnergyPlus outputs include both Hourly and Monthly fields.
-            # Prefer the monthly simulation-period total so it matches the
-            # baseline/AI comparison; use another matching field only when a
-            # monthly field is unavailable.
-            if "monthly" in col_lower or "energy_j" not in state:
-                state["energy_kw"] = last_row[col]
-                state["energy_j"] = last_row[col]
-        elif "site outdoor air drybulb temperature" in col_lower:
-            # Outdoor dry-bulb temperature from the EPW weather file, in °C.
-            # Used by the Weather Agent to adapt HVAC strategy to real outdoor conditions.
-            val = last_row[col]
-            if pd.notna(val):
-                state["outdoor_temp_c"] = float(val)
-
-    # Carbon estimate: Illinois grid emission factor ≈ 0.386 kg CO₂ per kWh (EPA eGrid 2022 RFCW)
-    # Electricity:Facility [J](Monthly) → kWh = J / 3,600,000 → kg CO₂ = kWh × 0.386
-    # This gives the Carbon Agent a real number to minimise rather than pure proxy reasoning.
-    energy_j = state.get("energy_j", state.get("energy_kw"))
-    if energy_j is not None and not pd.isna(energy_j):
-        energy_kwh = float(energy_j) / 3_600_000
-        state["carbon_kg_co2"] = round(energy_kwh * 0.386, 2)  # kg CO₂ for this simulation period
-        state["energy_kwh"] = round(energy_kwh, 2)             # human-readable kWh alongside raw J
+            state["energy_kw"] = last_row[col]
 
     # Fallback so downstream code never crashes on missing keys
     state.setdefault("zone_temps", {})
     state.setdefault("zone_humidity", {})
     state.setdefault("energy_kw", None)
-    state.setdefault("energy_j", state.get("energy_kw"))
-    state.setdefault("outdoor_temp_c", None)
-    state.setdefault("carbon_kg_co2", None)
-    state.setdefault("energy_kwh", None)
     return state
-
-
-def get_current_setpoint(idf_path: str = IDF_PATH, zone: str = "Core_mid") -> float | None:
-    """Read the active cooling schedule value without modifying the IDF."""
-    import re
-
-    schedule_name = ZONE_SCHEDULE_MAP.get(zone)
-    if not schedule_name or not os.path.exists(idf_path):
-        return None
-    with open(idf_path, "r", encoding="utf-8", errors="ignore") as handle:
-        content = handle.read()
-    match = re.search(
-        r"Schedule:Compact,\s*\n\s*" + re.escape(schedule_name) + r".*?;[^\n]*",
-        content,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not match:
-        return None
-    values = re.findall(r"\n\s+(-?\d+\.?\d*)\s*[,;]\s+!-\s*Field\s+\d+", match.group())
-    return float(values[0]) if values else None
 
 
 # ---------------------------------------------------------------------------

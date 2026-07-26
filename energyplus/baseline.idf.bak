@@ -530,29 +530,26 @@ Schedule:Compact,
     CLGSETP_SCH,              !- Name
     Temperature,              !- Schedule Type Limits Name
     Through: 12/31,           !- Field 1
-    For: Weekdays,            !- Field 2
-    Until: 06:00,             !- Field 3
+    For: AllDays,             !- Field 2
+    Until: 24:00,             !- Field 3
     23.0,                     !- Field 4
     Until: 22:00,             !- Field 5
     23.0,                     !- Field 6
     Until: 24:00,             !- Field 7
     23.0,                     !- Field 8
-    For SummerDesignDay,      !- Field 9
-    Until: 24:00,             !- Field 10
+    For: Saturday,            !- Field 9
+    Until: 06:00,             !- Field 10
     23.0,                     !- Field 11
-    For: Saturday,            !- Field 12
-    Until: 06:00,             !- Field 13
-    23.0,                     !- Field 14
-    Until: 18:00,             !- Field 15
-    23.0,                     !- Field 16
+    Until: 18:00,             !- Field 12
+    23.0,                     !- Field 13
+    Until: 24:00,             !- Field 14
+    23.0,                     !- Field 15
+    For WinterDesignDay,      !- Field 16
     Until: 24:00,             !- Field 17
     23.0,                     !- Field 18
-    For: WinterDesignDay,     !- Field 19
+    For: AllOtherDays,        !- Field 19
     Until: 24:00,             !- Field 20
-    23.0,                     !- Field 21
-    For: AllOtherDays,        !- Field 22
-    Until: 24:00,             !- Field 23
-    23.0;                     !- Field 24
+    23.0;                     !- Field 21
 
 Schedule:Compact,
     HTGSETP_SCH,              !- Name

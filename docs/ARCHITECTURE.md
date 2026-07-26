@@ -1,78 +1,88 @@
-# Eco-Loop Building Agents — Architecture Document
+# EcoLoop-AI Architecture
 
-## 1. Problem
-Traditional Building Management Systems use fixed schedules (e.g. "AC on at 9am") that cannot
-adapt to real-time conditions. This project builds an autonomous, closed-loop AI system that
-continuously monitors a building simulation and adjusts HVAC setpoints to reduce energy while
-maintaining occupant comfort.
+![EcoLoop-AI governed architecture](architecture.png)
 
-## 2. System Architecture
+## Purpose
 
+EcoLoop-AI demonstrates how multi-agent reasoning can sit inside an accountable building-controls architecture. The AI layer offers explainable recommendations; it is not granted authority to control HVAC directly.
+
+## Runtime sequence
+
+1. **EnergyPlus Digital Twin** produces zone mean-air temperatures, facility electricity, and simulated outdoor conditions.
+2. **State Reader** normalises the latest EnergyPlus output. `Electricity:Facility [J]` remains available as joules and is converted to kWh for human-facing calculations.
+3. **MCP Server** exposes building-state read, simulation-run, audit, and safety-gated HVAC tools.
+4. **Sensor validation** checks required temperature and energy telemetry before any AI call. It detects missing or non-finite data, implausible temperature, humidity outside 0–100%, negative energy, and an energy spike against recent runs.
+5. **LangGraph** invokes Comfort, Energy, Weather Forecast, Carbon Impact, and Occupancy agents sequentially. Sequential execution keeps each logged recommendation attributable and avoids concurrent state-write ambiguity.
+6. **HVAC Coordinator** selects an advisory setpoint and records its rationale for choosing it relative to the specialist positions.
+7. **Safety Supervisor** independently validates the proposal. It is ordinary deterministic Python, not an LLM.
+8. **HVAC Control Layer** can update the EnergyPlus cooling schedule only when Safety Supervisor approval is present.
+9. **EnergyPlus** runs the next simulation, and runtime evidence is written to SQLite for the dashboard and audit trail.
+
+## Explainability model
+
+`decision_trace` records, for every governed cycle:
+
+- agent identity and input snapshot;
+- reasoning text;
+- recommendation;
+- agreement confidence;
+- effect on the coordinator decision; and
+- final decision where applicable.
+
+Agreement confidence is calculated from the sample standard deviation of the five specialist recommendations over the 3 °C operating band:
+
+```text
+confidence = clamp(100 − standard_deviation(recommendations) / 3 × 100, 0, 100)
 ```
-EnergyPlus Simulation
-        │
-Building Telemetry (temp, humidity, energy)
-        │
-   MCP Tool Server
-        │
- ┌──────┴──────┬───────────┬────────────┐
- Comfort Agent  Energy Agent  Occupancy Agent  Carbon Agent
- └──────┬──────┴───────────┴────────────┘
-        │
-  Supervisor Agent
-        │
-  New HVAC Setpoints
-        │
-EnergyPlus Simulation (next cycle)
-```
 
-[Fill in: paste your final diagram here — you can regenerate this as an image for the slides.]
+It measures recommendation convergence, not model correctness.
 
-## 3. Components
+## Demand response and occupancy prediction
 
-### 3.1 Simulation Layer
-- EnergyPlus [version], building model: [name your baseline IDF / building type]
-- Interface method: [eppy short-run replanning / EMS callbacks — state which you used and why]
+The demonstration tariff is deterministic and displayed in the dashboard:
 
-### 3.2 Tool Layer (MCP)
-- MCP server exposes: `get_building_state`, `set_hvac_setpoint`, `run_simulation`,
-  `get_energy_baseline`, `log_decision`
-- [Note any tools you added/removed]
+| Window | Tariff | Energy-agent behaviour |
+|---|---:|---|
+| Weekday 14:00–20:00 | Peak, $0.25/kWh | Prefer sensible load reduction. |
+| 22:00–06:00 | Off-peak, $0.09/kWh | Permit forecast-led pre-conditioning where useful. |
+| Remaining hours | Normal, $0.15/kWh | Balance comfort and energy. |
 
-### 3.3 Agent Layer
-- Framework: LangGraph
-- Model: [Qwen2.5-7B / Llama 3 / etc.] via Ollama, run locally
-- 4 specialist agents (Comfort, Energy, Occupancy, Carbon) + 1 Supervisor, implemented as
-  distinct LangGraph nodes sharing one underlying LLM with role-specific system prompts
-- [Explain why: cost/latency tradeoff of one model with role prompts vs. 4 separate models]
+The Occupancy Agent uses a transparent weekday office-hours schedule. It flags a 60-minute pre-conditioning window before an 08:00 start. This is intentionally lightweight and must be replaced by approved site occupancy data in a real deployment.
 
-### 3.4 Prompt Engineering Strategy
-- All agents forced into JSON-mode output for reliability with a small local model
-- [Describe any prompt iteration you did, what failed, what worked]
+## Safety Supervisor
 
-### 3.5 Handling Long Simulation Logs
-- [Describe how you kept EnergyPlus output CSVs from overwhelming the LLM context —
-  e.g. summarizing to a small state dict rather than passing raw CSV rows]
+The Safety Supervisor is the final decision boundary before HVAC control. Its controls are:
 
-## 4. Closed-Loop Execution
-1. Read current building state via MCP
-2. Each specialist agent independently recommends a setpoint
-3. Supervisor merges recommendations into one final decision, respecting comfort bounds
-4. Decision applied to the EnergyPlus model
-5. Simulation re-run, new state produced
-6. Repeat
+| Rule | Behaviour |
+|---|---|
+| Required telemetry | Block control if zone-temperature or facility-energy telemetry is missing or invalid. |
+| Plausibility checks | Block temperatures outside 5–45 °C, humidity outside 0–100%, negative energy, and energy spikes above 2× recent average. |
+| Requested setpoint | Block non-numeric or physically implausible requests outside 10–35 °C. |
+| HVAC limits | Constrain valid requests to 21.0–24.0 °C. |
+| Rate limit | Limit the movement from the prior applied setpoint to 1.0 °C per cycle. |
+| Audit | Log every approval, block, clamp, and facility-manager outcome. |
 
-## 5. Results
-- Baseline avg energy demand: [X] kW
-- AI-controlled avg energy demand: [Y] kW
-- % Energy reduction: [Z]%
-- Comfort violations: [N] cycles outside 21–24°C band
-- (Pull these numbers directly from `data/results_summary.json` — do not estimate)
+An MCP transport-level guard applies the same deterministic review to direct tool callers, so an LLM or legacy loop cannot bypass the safety boundary by calling the setpoint tool directly.
 
-## 6. Limitations & Future Work
-- [Be honest: e.g. short-run replanning instead of true real-time EMS callbacks,
-  single-zone control instead of full multi-zone, no live grid carbon intensity feed]
-- Future: [EMS callbacks for true real-time control, multi-zone scaling, live carbon API]
+## Data and persistence
 
-## 7. Tech Stack
-Python, EnergyPlus, eppy, LangGraph, Ollama (Qwen2.5), MCP, Streamlit, Plotly, SQLite
+SQLite holds existing baseline and AI result tables plus these audit tables:
+
+- `decision_trace` — explainability records.
+- `safety_events` — Safety Supervisor approvals and blocks.
+- `sensor_anomalies` — telemetry quality events.
+- `facility_overrides` — facility-manager acceptance or override requests and outcome.
+
+The dashboard is a consumer of this audit data. A manager action queues a request then runs the governed graph; the dashboard never edits the IDF schedule itself.
+
+## Integration boundaries
+
+EnergyPlus is accessed through `sim_runner/eplus_interface.py`; the IDF schedule writer remains the existing focused plain-text schedule update. MCP remains the tool boundary. LangGraph remains the workflow coordinator. The additions are deliberately layered around those working integrations rather than replacing them.
+
+## Limitations
+
+- The model controls one simulated schedule (`Core_mid`) rather than a live multi-zone system.
+- Tariff, carbon factor, and occupancy data are demonstration inputs, not live utility or presence feeds.
+- The Weather Forecast Agent currently consumes the latest simulated outdoor dry-bulb value; it is not connected to a future-weather forecast feed.
+- The thermal comfort score is a temperature-target proxy, not a full PMV/PPD or ASHRAE 55 compliance calculation.
+- EnergyPlus results reflect the configured simulation period; savings should not be extrapolated to annual performance without an annual baseline and controlled comparison.

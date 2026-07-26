@@ -8,7 +8,9 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sim_runner.eplus_interface import get_building_state, apply_setpoints, run_simulation
+from sim_runner.eplus_interface import get_building_state, apply_setpoints, get_current_setpoint, run_simulation
+from agents.audit import log_safety_event, recent_energy_j
+from agents.safety_supervisor import DEFAULT_SETPOINT_C, review_setpoint
 
 # Store the last known baseline energy value once you've run Phase 4,
 # so agents can reference it for context (optional, nice for prompts).
@@ -21,9 +23,24 @@ def tool_get_building_state() -> dict:
 
 
 def tool_set_hvac_setpoint(zone: str, temp: float) -> dict:
-    """Sets a new cooling setpoint (Celsius) for a zone, applied on next run."""
-    apply_setpoints(zone=zone, new_temp=temp)
-    return {"status": "ok", "zone": zone, "new_temp": temp}
+    """Set a cooling setpoint only after deterministic safety review.
+
+    This keeps direct MCP callers and the legacy single-agent test loop behind
+    the same interlock as the LangGraph workflow.  The governed workflow logs
+    the full audit event before it reaches this transport-level guard.
+    """
+    decision = review_setpoint(
+        temp,
+        get_building_state(),
+        previous_setpoint=get_current_setpoint(zone=zone) or DEFAULT_SETPOINT_C,
+        historical_energy_j=recent_energy_j(),
+        source="mcp_hvac_guard",
+    )
+    log_safety_event(-1, "mcp_guard_approval" if decision["approved"] else "mcp_guard_block", decision)
+    if not decision["approved"]:
+        raise ValueError("HVAC command blocked by Safety Supervisor: " + "; ".join(decision["overrides"]))
+    apply_setpoints(zone=zone, new_temp=decision["applied_temp"])
+    return {"status": "ok", "zone": zone, "new_temp": decision["applied_temp"], "safety": decision}
 
 
 def tool_run_simulation() -> dict:

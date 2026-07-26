@@ -1,0 +1,10 @@
+{
+  "baseline_avg_energy_kw": 16179470594.443916,
+  "baseline_peak_energy_kw": 16179470594.443916,
+  "ai_avg_energy_kw": 16326487068.336641,
+  "ai_peak_energy_kw": 16412973211.89978,
+  "ai_cycles_run": 6,
+  "comfort_violations": 0,
+  "pct_energy_reduction": -0.91,
+  "peak_demand_delta_kw": -233502617.456
+}

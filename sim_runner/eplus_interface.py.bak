@@ -70,62 +70,14 @@ def get_building_state(run_dir: str = RUN_DIR) -> dict:
             state.setdefault("zone_temps", {})[col] = last_row[col]
         elif "zone air relative humidity" in col_lower:
             state.setdefault("zone_humidity", {})[col] = last_row[col]
-        elif "electricity demand" in col_lower or "facility total electricity" in col_lower or "electricity:facility" in col_lower:
-            # EnergyPlus output is Electricity:Facility [J](Monthly).  Keep the
-            # legacy key for compatibility, and expose an unambiguous key for
-            # governed control and dashboard calculations.
-            # Some EnergyPlus outputs include both Hourly and Monthly fields.
-            # Prefer the monthly simulation-period total so it matches the
-            # baseline/AI comparison; use another matching field only when a
-            # monthly field is unavailable.
-            if "monthly" in col_lower or "energy_j" not in state:
-                state["energy_kw"] = last_row[col]
-                state["energy_j"] = last_row[col]
-        elif "site outdoor air drybulb temperature" in col_lower:
-            # Outdoor dry-bulb temperature from the EPW weather file, in °C.
-            # Used by the Weather Agent to adapt HVAC strategy to real outdoor conditions.
-            val = last_row[col]
-            if pd.notna(val):
-                state["outdoor_temp_c"] = float(val)
-
-    # Carbon estimate: Illinois grid emission factor ≈ 0.386 kg CO₂ per kWh (EPA eGrid 2022 RFCW)
-    # Electricity:Facility [J](Monthly) → kWh = J / 3,600,000 → kg CO₂ = kWh × 0.386
-    # This gives the Carbon Agent a real number to minimise rather than pure proxy reasoning.
-    energy_j = state.get("energy_j", state.get("energy_kw"))
-    if energy_j is not None and not pd.isna(energy_j):
-        energy_kwh = float(energy_j) / 3_600_000
-        state["carbon_kg_co2"] = round(energy_kwh * 0.386, 2)  # kg CO₂ for this simulation period
-        state["energy_kwh"] = round(energy_kwh, 2)             # human-readable kWh alongside raw J
+        elif "electricity demand" in col_lower or "facility total electricity" in col_lower:
+            state["energy_kw"] = last_row[col]
 
     # Fallback so downstream code never crashes on missing keys
     state.setdefault("zone_temps", {})
     state.setdefault("zone_humidity", {})
     state.setdefault("energy_kw", None)
-    state.setdefault("energy_j", state.get("energy_kw"))
-    state.setdefault("outdoor_temp_c", None)
-    state.setdefault("carbon_kg_co2", None)
-    state.setdefault("energy_kwh", None)
     return state
-
-
-def get_current_setpoint(idf_path: str = IDF_PATH, zone: str = "Core_mid") -> float | None:
-    """Read the active cooling schedule value without modifying the IDF."""
-    import re
-
-    schedule_name = ZONE_SCHEDULE_MAP.get(zone)
-    if not schedule_name or not os.path.exists(idf_path):
-        return None
-    with open(idf_path, "r", encoding="utf-8", errors="ignore") as handle:
-        content = handle.read()
-    match = re.search(
-        r"Schedule:Compact,\s*\n\s*" + re.escape(schedule_name) + r".*?;[^\n]*",
-        content,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not match:
-        return None
-    values = re.findall(r"\n\s+(-?\d+\.?\d*)\s*[,;]\s+!-\s*Field\s+\d+", match.group())
-    return float(values[0]) if values else None
 
 
 # ---------------------------------------------------------------------------
@@ -136,60 +88,50 @@ def apply_setpoints(zone: str, new_temp: float, idf_path: str = IDF_PATH):
     """
     Updates the cooling setpoint values in an existing Schedule:Compact
     without changing its Through/For/Until structure.
-
-    Uses plain-text editing instead of Eppy to avoid Eppy corrupting
-    Schedule:Compact objects when it re-serializes the IDF on save.
     """
-    import re
 
     if zone not in ZONE_SCHEDULE_MAP:
         raise ValueError(f"Unknown zone '{zone}'. Add it to ZONE_SCHEDULE_MAP.")
 
     schedule_name = ZONE_SCHEDULE_MAP[zone]
+    idf = IDF(idf_path)
 
-    with open(idf_path, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
+    schedules = idf.idfobjects["SCHEDULE:COMPACT"]
+    target = next((s for s in schedules if s.Name == schedule_name), None)
 
-    # Find the Schedule:Compact block for our target schedule.
-    # Pattern: starts with "Schedule:Compact," on its own line, next line has the name,
-    # and ends at the next semicolon-terminated line.
-    pattern = re.compile(
-        r'(Schedule:Compact,\s*\n\s*' + re.escape(schedule_name) + r'\s*,)'
-        r'(.*?;[^\n]*)',
-        re.DOTALL | re.IGNORECASE
-    )
-
-    match = pattern.search(content)
-    if match is None:
+    if target is None:
         raise ValueError(f"Schedule '{schedule_name}' not found in IDF.")
 
-    block_start = match.start()
-    block_end = match.end()
-    block_text = content[block_start:block_end]
+    # Update only numeric temperature values.
+    for i in range(1, 100):
+        field = f"Field_{i}"
 
-    # Replace only standalone numeric values (temperature setpoints).
-    # These are lines that contain ONLY a number followed by comma/semicolon and field comment.
-    # We must NOT match lines containing Through:, For, Until:, or Schedule Type names.
-    def replace_temp(m):
-        return m.group(1) + str(new_temp) + m.group(3)
+        if not hasattr(target, field):
+            break
 
-    new_block = re.sub(
-        r'(\n\s+)'                        # leading whitespace on the line
-        r'(-?\d+\.?\d*)'                  # the numeric value to replace
-        r'(\s*[,;]\s+!-\s*Field\s+\d+)',  # comma/semicolon + field comment
-        replace_temp,
-        block_text
-    )
-    # Safety: verify we didn't corrupt any structural lines
-    for keyword in ["Through:", "For:", "For ", "Until:", "Temperature", "Schedule:Compact"]:
-        assert keyword not in block_text or keyword in new_block, \
-            f"apply_setpoints corrupted the schedule: lost '{keyword}'"
+        value = getattr(target, field)
 
-    content = content[:block_start] + new_block + content[block_end:]
+        if value is None:
+            continue
 
-    with open(idf_path, "w", encoding="utf-8") as f:
-        f.write(content)
+        value = str(value).strip()
 
+        # Skip schedule keywords
+        if (
+            value.startswith("Through:")
+            or value.startswith("For")
+            or value.startswith("Until:")
+        ):
+            continue
+
+        # Replace numeric values only
+        try:
+            float(value)
+            setattr(target, field, str(new_temp))
+        except ValueError:
+            pass
+
+    idf.save(idf_path)
     return True
 
 # ---------------------------------------------------------------------------

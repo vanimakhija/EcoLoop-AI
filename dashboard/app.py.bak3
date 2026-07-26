@@ -1,0 +1,963 @@
+"""
+dashboard/app.py — EcoLoop-AI Professional Dashboard
+Run with: streamlit run dashboard/app.py
+
+Reads data from results.db and simulation outputs only.
+Does NOT trigger any simulations.
+"""
+
+import os
+import json
+import sqlite3
+import re
+import datetime
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Paths (unchanged from original)
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH      = os.path.join(PROJECT_ROOT, "data", "results.db")
+SUMMARY_PATH = os.path.join(PROJECT_ROOT, "data", "results_summary.json")
+CSV_PATH     = os.path.join(PROJECT_ROOT, "energyplus", "current_run", "eplusout.csv")
+ERR_PATH     = os.path.join(PROJECT_ROOT, "energyplus", "current_run", "eplusout.err")
+IDF_PATH     = os.path.join(PROJECT_ROOT, "energyplus", "baseline.idf")
+
+# ---------------------------------------------------------------------------
+# Page config — must be first Streamlit call
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="EcoLoop-AI | Smart Building Intelligence",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# ---------------------------------------------------------------------------
+# Inject CSS — full dark theme + component styles
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* ── Google Fonts ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Global reset ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+
+html, body, [data-testid="stAppViewContainer"],
+[data-testid="stApp"], .main { 
+    background-color: #0a0e1a !important;
+    color: #e2e8f0 !important;
+    font-family: 'Inter', sans-serif !important;
+}
+
+/* Kill default Streamlit padding */
+.main .block-container {
+    padding: 0 !important;
+    max-width: 100% !important;
+}
+
+/* Hide Streamlit chrome */
+#MainMenu, footer, header,
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stSidebar"] { display: none !important; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f1422; }
+::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+
+/* ── Top nav bar ── */
+.nav-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 32px;
+    background: linear-gradient(135deg, #0f1422 0%, #111827 100%);
+    border-bottom: 1px solid rgba(99,179,237,0.15);
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    backdrop-filter: blur(12px);
+}
+.nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.nav-logo-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #4299e1, #667eea);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    box-shadow: 0 0 20px rgba(66,153,225,0.4);
+}
+.nav-title { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
+.nav-subtitle { font-size: 11px; font-weight: 400; color: #718096; letter-spacing: 0.5px; text-transform: uppercase; }
+.nav-right { display: flex; align-items: center; gap: 20px; }
+.nav-time { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #a0aec0; }
+.status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px;
+    border-radius: 20px; font-size: 12px; font-weight: 500;
+}
+.status-ok   { background: rgba(72,187,120,0.15); color: #68d391; border: 1px solid rgba(72,187,120,0.3); }
+.status-warn { background: rgba(246,173,85,0.15);  color: #f6ad55; border: 1px solid rgba(246,173,85,0.3); }
+.status-err  { background: rgba(252,129,74,0.15);  color: #fc814a; border: 1px solid rgba(252,129,74,0.3); }
+.status-dot  { width: 7px; height: 7px; border-radius: 50%; }
+.dot-ok   { background: #68d391; box-shadow: 0 0 6px #68d391; animation: pulse 2s infinite; }
+.dot-warn { background: #f6ad55; box-shadow: 0 0 6px #f6ad55; animation: pulse 2s infinite; }
+.dot-err  { background: #fc814a; }
+@keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+}
+
+/* ── Page padding wrapper ── */
+.page-wrap { padding: 28px 32px; }
+
+/* ── Section headers ── */
+.section-header {
+    display: flex; align-items: center; gap: 10px;
+    margin: 32px 0 16px;
+}
+.section-header-icon {
+    width: 32px; height: 32px;
+    background: rgba(66,153,225,0.12);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+}
+.section-title { font-size: 16px; font-weight: 600; color: #e2e8f0; }
+.section-line { flex: 1; height: 1px; background: rgba(255,255,255,0.06); margin-left: 8px; }
+
+/* ── KPI cards ── */
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 8px; }
+.kpi-card {
+    background: linear-gradient(145deg, #111827, #0f1422);
+    border-radius: 16px;
+    padding: 22px 22px 18px;
+    border: 1px solid rgba(255,255,255,0.07);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    cursor: default;
+    position: relative;
+    overflow: hidden;
+}
+.kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 16px 16px 0 0;
+}
+.kpi-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.kpi-card.green::before  { background: linear-gradient(90deg, #48bb78, #38a169); }
+.kpi-card.green:hover    { border-color: rgba(72,187,120,0.3); }
+.kpi-card.blue::before   { background: linear-gradient(90deg, #4299e1, #3182ce); }
+.kpi-card.blue:hover     { border-color: rgba(66,153,225,0.3); }
+.kpi-card.purple::before { background: linear-gradient(90deg, #9f7aea, #805ad5); }
+.kpi-card.purple:hover   { border-color: rgba(159,122,234,0.3); }
+.kpi-card.orange::before { background: linear-gradient(90deg, #ed8936, #dd6b20); }
+.kpi-card.orange:hover   { border-color: rgba(237,137,54,0.3); }
+
+.kpi-top    { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+.kpi-icon   { font-size: 22px; }
+.kpi-trend  { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 12px; }
+.trend-up   { background: rgba(72,187,120,0.15); color: #68d391; }
+.trend-down { background: rgba(245,101,101,0.15); color: #fc8181; }
+.trend-flat { background: rgba(160,174,192,0.12); color: #a0aec0; }
+.kpi-value  { font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.5px; line-height: 1; }
+.kpi-unit   { font-size: 13px; font-weight: 400; color: #718096; margin-left: 2px; }
+.kpi-label  { font-size: 12px; font-weight: 500; color: #718096; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ── Overview cards ── */
+.overview-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.ov-card {
+    background: #111827;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 16px;
+    transition: border-color 0.2s;
+}
+.ov-card:hover { border-color: rgba(66,153,225,0.25); }
+.ov-card-icon  { font-size: 20px; margin-bottom: 8px; }
+.ov-card-label { font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.5px; }
+.ov-card-value { font-size: 18px; font-weight: 600; color: #e2e8f0; margin-top: 4px; }
+.ov-card-sub   { font-size: 11px; color: #4a5568; margin-top: 3px; }
+
+/* ── Timeline ── */
+.timeline { position: relative; padding-left: 24px; }
+.timeline::before {
+    content: '';
+    position: absolute; left: 8px; top: 0; bottom: 0; width: 2px;
+    background: linear-gradient(180deg, #4299e1 0%, #9f7aea 50%, #68d391 100%);
+    opacity: 0.4;
+}
+.tl-item { position: relative; margin-bottom: 16px; }
+.tl-dot {
+    position: absolute; left: -20px; top: 12px;
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid #0a0e1a;
+}
+.tl-card {
+    background: #111827;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 14px 16px;
+    transition: border-color 0.2s, transform 0.15s;
+}
+.tl-card:hover { border-color: rgba(66,153,225,0.2); transform: translateX(3px); }
+.tl-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.tl-agent  { font-size: 13px; font-weight: 600; }
+.tl-badge  { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 10px; }
+.tl-rationale { font-size: 12px; color: #a0aec0; line-height: 1.5; }
+.tl-action { font-size: 12px; color: #718096; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
+
+/* ── Agent color tokens ── */
+.agent-comfort   { color: #63b3ed; } .dot-comfort   { background: #63b3ed; }
+.agent-energy    { color: #68d391; } .dot-energy    { background: #68d391; }
+.agent-weather   { color: #f6ad55; } .dot-weather   { background: #f6ad55; }
+.agent-carbon    { color: #9f7aea; } .dot-carbon    { background: #9f7aea; }
+.agent-coordinator { color: #fc8181; } .dot-coordinator { background: #fc8181; }
+.badge-comfort   { background: rgba(99,179,237,0.12); color: #63b3ed; border: 1px solid rgba(99,179,237,0.2); }
+.badge-energy    { background: rgba(104,211,145,0.12); color: #68d391; border: 1px solid rgba(104,211,145,0.2); }
+.badge-weather   { background: rgba(246,173,85,0.12);  color: #f6ad55; border: 1px solid rgba(246,173,85,0.2); }
+.badge-carbon    { background: rgba(159,122,234,0.12); color: #9f7aea; border: 1px solid rgba(159,122,234,0.2); }
+.badge-coordinator { background: rgba(252,129,122,0.12); color: #fc8181; border: 1px solid rgba(252,129,122,0.2); }
+.badge-single_agent { background: rgba(160,174,192,0.12); color: #a0aec0; border: 1px solid rgba(160,174,192,0.2); }
+
+/* ── Chart container ── */
+.chart-card {
+    background: #111827;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+/* ── Empty state ── */
+.empty-state {
+    text-align: center; padding: 40px 20px;
+    color: #4a5568; font-size: 13px;
+}
+.empty-state-icon { font-size: 36px; margin-bottom: 10px; }
+
+/* ── Footer ── */
+.footer {
+    margin-top: 48px;
+    padding: 24px 32px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.footer-left { font-size: 13px; color: #4a5568; }
+.footer-stack { display: flex; gap: 8px; flex-wrap: wrap; }
+.tech-pill {
+    font-size: 11px; font-weight: 500;
+    padding: 4px 10px; border-radius: 8px;
+    background: rgba(66,153,225,0.08);
+    color: #63b3ed;
+    border: 1px solid rgba(66,153,225,0.15);
+}
+
+/* ── Streamlit widget overrides ── */
+[data-testid="stExpander"] {
+    background: #111827 !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+    border-radius: 12px !important;
+}
+div[data-testid="stMetric"] { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Helper: unit conversion (J → kWh or MWh)
+# ---------------------------------------------------------------------------
+def joules_to_display(j):
+    """Convert joules to a human-readable string."""
+    if j is None or (isinstance(j, float) and j != j):
+        return "—", ""
+    j = float(j)
+    kwh = j / 3_600_000          # 1 kWh = 3.6 MJ
+    if kwh >= 1_000_000:
+        return f"{kwh/1_000_000:.2f}", "GWh"
+    elif kwh >= 1_000:
+        return f"{kwh/1_000:.1f}", "MWh"
+    else:
+        return f"{kwh:.1f}", "kWh"
+
+
+def joules_to_kw_display(j):
+    """For demand values, show as kW (assumes J reported per hour = Wh → /1000 = kWh → treat as kW avg)."""
+    val, unit = joules_to_display(j)
+    return val, unit
+
+
+# ---------------------------------------------------------------------------
+# Data loaders (read-only — no simulations triggered)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=30)
+def load_summary():
+    if os.path.exists(SUMMARY_PATH):
+        with open(SUMMARY_PATH) as f:
+            return json.load(f)
+    return {}
+
+@st.cache_data(ttl=30)
+def load_agent_recs_for_confidence():
+    """
+    Compute AI confidence from the spread of agent recommendations.
+
+    Formula:
+        1. For each coordinator decision cycle, collect the 4 specialist
+           recommendations (comfort, energy, weather, carbon).
+        2. Compute the standard deviation of those 4 values.
+        3. Confidence = 100 - (std_dev / max_range × 100), where
+           max_range = TEMP_MAX - TEMP_MIN = 3.0°C.
+           A std_dev of 0 → agents fully agree → 100% confidence.
+           A std_dev of 1.5 → half the range → 50% confidence.
+        4. Average across all logged cycles, clamp to [0, 100].
+
+    Returns:
+        confidence (int | None): 0-100%, or None if no data.
+        raw_recs (list[float]): most-recent cycle's recommendations for display.
+    """
+    if not os.path.exists(DB_PATH):
+        return None, []
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Load agent decisions; each row has agent name and action string like 'recommended 23.5'
+        df = pd.read_sql(
+            "SELECT agent, action, timestamp FROM agent_decisions ORDER BY timestamp", conn
+        )
+        conn.close()
+        if df.empty:
+            return None, []
+
+        SPECIALIST_AGENTS = {"comfort_agent", "energy_agent", "weather_agent", "carbon_agent"}
+        TEMP_RANGE = 3.0   # 24.0 - 21.0
+
+        # Extract numeric recommendations from action strings like 'recommended 23.5'
+        import re as _re
+        def extract_temp(action_str):
+            m = _re.search(r'(-?\d+\.?\d*)', str(action_str))
+            return float(m.group(1)) if m else None
+
+        df["temp_rec"] = df["action"].apply(extract_temp)
+        df = df[df["agent"].isin(SPECIALIST_AGENTS) & df["temp_rec"].notna()]
+
+        if df.empty:
+            return None, []
+
+        # Group by approximate time windows (every 5 rows = one cycle)
+        # Since agents run sequentially, group by timestamp proximity
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.sort_values("timestamp")
+
+        # Build cycles: collect groups of 4 consecutive specialist agent rows
+        cycle_stds = []
+        recs = df["temp_rec"].tolist()
+        for i in range(0, len(recs) - 3, 4):
+            group = recs[i:i+4]
+            if len(group) == 4:
+                import statistics
+                std = statistics.stdev(group) if len(set(group)) > 1 else 0.0
+                cycle_stds.append(std)
+
+        if not cycle_stds:
+            return None, recs[-4:]
+
+        avg_std = sum(cycle_stds) / len(cycle_stds)
+        # Clamp: std of 0 → 100%, std >= TEMP_RANGE → 0%
+        confidence = int(max(0, min(100, round(100 - (avg_std / TEMP_RANGE * 100)))))
+        return confidence, recs[-4:] if len(recs) >= 4 else recs
+    except Exception:
+        return None, []
+
+@st.cache_data(ttl=30)
+def load_db_table(table: str):
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql(f"SELECT * FROM {table} ORDER BY rowid DESC LIMIT 100", conn)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def load_zone_temps():
+    if not os.path.exists(CSV_PATH):
+        return {}
+    try:
+        df = pd.read_csv(CSV_PATH)
+        # Drop rows where all temp cols are NaN (the sub-hourly rows)
+        temp_cols = [c for c in df.columns if "zone mean air temperature" in c.lower()]
+        if not temp_cols:
+            return {}
+        df_temps = df[temp_cols].dropna()
+        if df_temps.empty:
+            return {}
+        last = df_temps.iloc[-1]
+        result = {}
+        for col in temp_cols:
+            zone = col.split(":")[0].replace("_", " ").title()
+            result[zone] = round(float(last[col]), 2)
+        return result
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=30)
+def load_sim_status():
+    if not os.path.exists(ERR_PATH):
+        return "none", "No simulation run yet"
+    with open(ERR_PATH, "r", encoding="utf-8", errors="ignore") as f:
+        txt = f.read()
+    if "Completed Successfully" in txt:
+        # Extract elapsed time
+        for line in txt.split("\n"):
+            if "Elapsed Time" in line:
+                elapsed = line.strip().lstrip("*").strip()
+                return "ok", elapsed
+        return "ok", "Completed"
+    elif "Fatal" in txt:
+        return "err", "Fatal error — check eplusout.err"
+    return "warn", "Unknown status"
+
+@st.cache_data(ttl=30)
+def load_current_setpoint():
+    if not os.path.exists(IDF_PATH):
+        return None
+    try:
+        with open(IDF_PATH, "r", encoding="utf-8", errors="ignore") as f:
+            txt = f.read()
+        m = re.search(
+            r'Schedule:Compact,\s*\n\s*CLGSETP_SCH.*?;[^\n]*',
+            txt, re.DOTALL | re.IGNORECASE
+        )
+        if not m:
+            return None
+        temps = re.findall(r'\n\s+(-?\d+\.?\d*)\s*[,;]\s+!-\s*Field\s+\d+', m.group())
+        return float(temps[0]) if temps else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Build Plotly theme helper
+# ---------------------------------------------------------------------------
+PLOTLY_LAYOUT = dict(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(family="Inter, sans-serif", color="#a0aec0", size=12),
+    margin=dict(l=0, r=0, t=8, b=0),
+    legend=dict(
+        bgcolor="rgba(17,24,39,0.8)", bordercolor="rgba(255,255,255,0.08)",
+        borderwidth=1, font=dict(size=11)
+    ),
+)
+AXIS_STYLE = dict(gridcolor="rgba(255,255,255,0.05)", linecolor="rgba(255,255,255,0.08)")
+
+
+# ===========================================================================
+# RENDER START
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ① Top navigation bar
+# ---------------------------------------------------------------------------
+sim_status, sim_msg = load_sim_status()
+status_class = {"ok": "status-ok", "warn": "status-warn", "err": "status-err", "none": "status-warn"}[sim_status]
+dot_class    = {"ok": "dot-ok",    "warn": "dot-warn",    "err": "dot-err",  "none": "dot-warn"}[sim_status]
+status_label = {"ok": "Simulation OK", "warn": "No Data", "err": "Sim Error", "none": "No Data"}[sim_status]
+now_str = datetime.datetime.now().strftime("%H:%M:%S  %d %b %Y")
+
+st.markdown(f"""
+<div class="nav-bar">
+  <div class="nav-logo">
+    <div class="nav-logo-icon">⚡</div>
+    <div>
+      <div class="nav-title">EcoLoop<span style="color:#4299e1">-AI</span></div>
+      <div class="nav-subtitle">Smart Building Intelligence</div>
+    </div>
+  </div>
+  <div class="nav-right">
+    <div class="status-pill {status_class}">
+      <span class="status-dot {dot_class}"></span>
+      {status_label}
+    </div>
+    <div class="nav-time">{now_str}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Page content wrapper
+st.markdown('<div class="page-wrap">', unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ② Hero KPI cards
+# ---------------------------------------------------------------------------
+summary      = load_summary()
+zone_temps   = load_zone_temps()
+setpoint     = load_current_setpoint()
+ai_df        = load_db_table("ai_results")
+decisions_df = load_db_table("agent_decisions")
+confidence, last_cycle_recs = load_agent_recs_for_confidence()
+
+pct_reduction = summary.get("pct_energy_reduction")
+# energy_kw field actually stores Electricity:Facility [J](Monthly)
+# = total facility electricity in joules for the two design-day run period.
+# Convert: J ÷ 3,600,000 = kWh
+ai_energy_j   = summary.get("ai_avg_energy_kw")    # raw joules (legacy key name)
+base_energy_j = summary.get("baseline_avg_energy_kw")  # raw joules
+comfort_viol  = summary.get("comfort_violations")
+ai_cycles     = summary.get("ai_cycles_run", 0)
+
+# Comfort Score: fraction of zones inside 21–24°C comfort band
+# Formula: (zones_in_band / total_zones) × 100
+if zone_temps:
+    in_band = sum(1 for v in zone_temps.values() if 21.0 <= v <= 24.0)
+    comfort_score = round(in_band / len(zone_temps) * 100)
+else:
+    comfort_score = None
+
+# Energy display values (raw J → kWh or MWh label)
+ai_val, ai_unit     = joules_to_display(ai_energy_j)
+base_val, base_unit = joules_to_display(base_energy_j)
+
+# Energy saved: calculated by compute_savings.py from real simulation runs
+pct_str   = f"{abs(pct_reduction):.1f}%" if pct_reduction is not None else "—"
+pct_trend = "trend-down" if (pct_reduction or 0) < 0 else "trend-up"
+pct_arrow = "↓" if (pct_reduction or 0) < 0 else "↑"  # ↑ = saved, ↓ = higher than baseline
+comfort_trend_cls = "trend-up" if (comfort_score or 0) >= 80 else "trend-down"
+
+st.markdown(f"""
+<div class="kpi-grid">
+  <div class="kpi-card green">
+    <div class="kpi-top">
+      <div class="kpi-icon">🌱</div>
+      <div class="kpi-trend {pct_trend}">{pct_arrow} {pct_str}</div>
+    </div>
+    <div class="kpi-value">{pct_str}<span class="kpi-unit"></span></div>
+    <div class="kpi-label">Energy Saved vs Baseline</div>
+  </div>
+
+  <div class="kpi-card blue">
+    <div class="kpi-top">
+      <div class="kpi-icon">⚡</div>
+      <div class="kpi-trend trend-flat">AI-Controlled</div>
+    </div>
+    <div class="kpi-value">{ai_val}<span class="kpi-unit">{ai_unit}</span></div>
+    <div class="kpi-label">Current Energy Consumption</div>
+  </div>
+
+  <div class="kpi-card purple">
+    <div class="kpi-top">
+      <div class="kpi-icon">🎯</div>
+      <div class="kpi-trend {comfort_trend_cls}">
+        {'↑ Good' if (comfort_score or 0) >= 80 else '↓ Review'}
+      </div>
+    </div>
+    <div class="kpi-value">
+      {'—' if comfort_score is None else comfort_score}<span class="kpi-unit">{'%' if comfort_score is not None else ''}</span>
+    </div>
+    <div class="kpi-label">Comfort Score (Zones in Band)</div>
+  </div>
+
+  <div class="kpi-card orange">
+    <div class="kpi-top">
+      <div class="kpi-icon">🤖</div>
+      <div class="kpi-trend trend-up">↑ Active</div>
+    </div>
+    <div class="kpi-value">
+      {'—' if confidence is None else confidence}<span class="kpi-unit">{'%' if confidence is not None else ''}</span>
+    </div>
+    <div class="kpi-label">AI Decision Confidence</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ③ Building Overview
+# ---------------------------------------------------------------------------
+st.markdown("""
+<div class="section-header">
+  <div class="section-header-icon">🏢</div>
+  <span class="section-title">Building Overview</span>
+  <div class="section-line"></div>
+</div>
+""", unsafe_allow_html=True)
+
+avg_temp = round(sum(zone_temps.values()) / len(zone_temps), 1) if zone_temps else None
+setpoint_disp = f"{setpoint} °C" if setpoint is not None else "—"
+avg_temp_disp = f"{avg_temp} °C" if avg_temp is not None else "—"
+
+# Determine energy mode
+if pct_reduction is not None:
+    if pct_reduction > 5:
+        energy_mode = "🟢 Eco Optimized"
+    elif pct_reduction > 0:
+        energy_mode = "🟡 Balanced"
+    else:
+        energy_mode = "🔴 Baseline Mode"
+else:
+    energy_mode = "⚪ No Data"
+
+hvac_status = "🟢 Active" if sim_status == "ok" else "⚪ Standby"
+
+st.markdown(f"""
+<div class="overview-grid">
+  <div class="ov-card">
+    <div class="ov-card-icon">❄️</div>
+    <div class="ov-card-label">HVAC Status</div>
+    <div class="ov-card-value">{hvac_status}</div>
+    <div class="ov-card-sub">Cooling system</div>
+  </div>
+  <div class="ov-card">
+    <div class="ov-card-icon">🌡️</div>
+    <div class="ov-card-label">Current Setpoint</div>
+    <div class="ov-card-value">{setpoint_disp}</div>
+    <div class="ov-card-sub">CLGSETP_SCH</div>
+  </div>
+  <div class="ov-card">
+    <div class="ov-card-icon">🏙️</div>
+    <div class="ov-card-label">Location</div>
+    <div class="ov-card-value">Chicago, IL</div>
+    <div class="ov-card-sub">USA IL-CHICAGO-OHARE</div>
+  </div>
+  <div class="ov-card">
+    <div class="ov-card-icon">🌡️</div>
+    <div class="ov-card-label">Indoor Avg Temp</div>
+    <div class="ov-card-value">{avg_temp_disp}</div>
+    <div class="ov-card-sub">All zones mean</div>
+  </div>
+  <div class="ov-card">
+    <div class="ov-card-icon">⚙️</div>
+    <div class="ov-card-label">Energy Mode</div>
+    <div class="ov-card-value" style="font-size:14px">{energy_mode}</div>
+    <div class="ov-card-sub">{ai_cycles} AI cycles run</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ④ Live Zone Temperatures
+# ---------------------------------------------------------------------------
+st.markdown("""
+<div class="section-header">
+  <div class="section-header-icon">📊</div>
+  <span class="section-title">Live Zone Temperatures</span>
+  <div class="section-line"></div>
+</div>
+""", unsafe_allow_html=True)
+
+if zone_temps:
+    zones  = list(zone_temps.keys())
+    temps  = list(zone_temps.values())
+    avg_t  = sum(temps) / len(temps)
+
+    colors = []
+    for t in temps:
+        if t < 21.0:
+            colors.append("#63b3ed")     # too cold → blue
+        elif t > 24.0:
+            colors.append("#fc8181")     # too hot → red
+        else:
+            colors.append("#68d391")     # comfort → green
+
+    fig_zones = go.Figure()
+
+    # Comfort band
+    fig_zones.add_hrect(
+        y0=21.0, y1=24.0,
+        fillcolor="rgba(104,211,145,0.06)",
+        line_width=0,
+        annotation_text="Comfort Band (21–24°C)",
+        annotation_font=dict(color="#4a5568", size=10),
+        annotation_position="top right",
+    )
+
+    # Bar chart
+    fig_zones.add_trace(go.Bar(
+        x=zones, y=temps,
+        marker=dict(
+            color=colors,
+            opacity=0.85,
+            line=dict(color="rgba(0,0,0,0)", width=0),
+        ),
+        hovertemplate="<b>%{x}</b><br>Temp: %{y:.2f}°C<extra></extra>",
+        width=0.6,
+    ))
+
+    # Average line
+    fig_zones.add_hline(
+        y=avg_t, line_dash="dot", line_color="#f6ad55", line_width=1.5,
+        annotation_text=f"Avg {avg_t:.1f}°C",
+        annotation_font=dict(color="#f6ad55", size=10),
+        annotation_position="top left",
+    )
+
+    fig_zones.update_layout(
+        **PLOTLY_LAYOUT,
+        height=340,
+        bargap=0.25,
+    )
+    fig_zones.update_xaxes(
+        tickfont=dict(size=10, color="#718096"),
+        tickangle=-40,
+        **AXIS_STYLE,
+    )
+    fig_zones.update_yaxes(
+        title=dict(text="Temperature (°C)", font=dict(size=11, color="#718096")),
+        range=[min(min(temps)-1, 19.5), max(max(temps)+1, 25.5)],
+        **AXIS_STYLE,
+    )
+
+    st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+    st.plotly_chart(fig_zones, use_container_width=True, config={"displayModeBar": False})
+    st.markdown('</div>', unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div class="chart-card">
+      <div class="empty-state">
+        <div class="empty-state-icon">📊</div>
+        No simulation output found. Run <code>python sim_runner/eplus_interface.py</code> first.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ⑤ AI Decision Timeline  +  Energy Comparison  (two columns)
+# ---------------------------------------------------------------------------
+col_timeline, col_energy = st.columns([1, 1], gap="large")
+
+with col_timeline:
+    st.markdown("""
+    <div class="section-header">
+      <div class="section-header-icon">🤖</div>
+      <span class="section-title">AI Decision Timeline</span>
+      <div class="section-line"></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    AGENT_META = {
+        "comfort_agent":  ("Comfort Agent",     "badge-comfort",   "dot-comfort",   "🎯"),
+        "energy_agent":   ("Energy Agent",      "badge-energy",    "dot-energy",    "⚡"),
+        "weather_agent":  ("Weather Agent",     "badge-weather",   "dot-weather",   "🌤️"),
+        "carbon_agent":   ("Carbon Agent",      "badge-carbon",    "dot-carbon",    "🌱"),
+        "coordinator":    ("Coordinator",       "badge-coordinator","dot-coordinator","🧠"),
+        "single_agent":   ("Single Agent",      "badge-single_agent","dot-flat",    "🤖"),
+    }
+
+    if not decisions_df.empty and "agent" in decisions_df.columns:
+        # Show most recent 8
+        recent = decisions_df.head(8)
+        st.markdown('<div class="timeline">', unsafe_allow_html=True)
+        for _, row in recent.iterrows():
+            agent_key  = str(row.get("agent", "")).lower()
+            rationale  = str(row.get("rationale", ""))
+            action     = str(row.get("action", ""))
+            ts         = str(row.get("timestamp", ""))[:16].replace("T", " ")
+
+            meta = AGENT_META.get(agent_key, (agent_key.title(), "badge-single_agent", "dot-flat", "🤖"))
+            label, badge_cls, dot_cls, icon = meta
+
+            st.markdown(f"""
+            <div class="tl-item">
+              <span class="tl-dot {dot_cls}" style="border-color:#0a0e1a"></span>
+              <div class="tl-card">
+                <div class="tl-header">
+                  <span class="tl-agent">{icon} {label}</span>
+                  <span class="tl-badge {badge_cls}">{ts}</span>
+                </div>
+                <div class="tl-rationale">{rationale[:180] + '…' if len(rationale) > 180 else rationale}</div>
+                <div class="tl-action">→ {action}</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="chart-card">
+          <div class="empty-state">
+            <div class="empty-state-icon">🤖</div>
+            No agent decisions logged yet.<br>Run <code>python agents/graph.py</code>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+with col_energy:
+    st.markdown("""
+    <div class="section-header">
+      <div class="section-header-icon">⚡</div>
+      <span class="section-title">Energy Comparison</span>
+      <div class="section-line"></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Bar: baseline vs AI
+    if base_energy_j and ai_energy_j:
+        base_kwh = base_energy_j / 3_600_000
+        ai_kwh   = ai_energy_j   / 3_600_000
+
+        fig_cmp = go.Figure(data=[
+            go.Bar(
+                name="Baseline",
+                x=["Baseline"],
+                y=[base_kwh],
+                marker=dict(color="#4a5568", opacity=0.8),
+                hovertemplate=f"Baseline: {base_kwh:,.1f} kWh<extra></extra>",
+                width=0.35,
+            ),
+            go.Bar(
+                name="AI-Controlled",
+                x=["AI-Controlled"],
+                y=[ai_kwh],
+                marker=dict(
+                    color="#4299e1" if ai_kwh <= base_kwh else "#fc8181",
+                    opacity=0.9,
+                ),
+                hovertemplate=f"AI: {ai_kwh:,.1f} kWh<extra></extra>",
+                width=0.35,
+            ),
+        ])
+
+        delta_pct = (base_kwh - ai_kwh) / base_kwh * 100
+        delta_txt = f"{'−' if delta_pct > 0 else '+'}{abs(delta_pct):.1f}% vs baseline"
+
+        fig_cmp.update_layout(
+            **PLOTLY_LAYOUT,
+            height=200,
+            barmode="group",
+            showlegend=True,
+            annotations=[dict(
+                text=delta_txt,
+                xref="paper", yref="paper", x=0.5, y=1.08,
+                showarrow=False,
+                font=dict(size=13, color="#68d391" if delta_pct > 0 else "#fc8181", family="Inter"),
+                xanchor="center",
+            )],
+        )
+        fig_cmp.update_xaxes(**AXIS_STYLE)
+        fig_cmp.update_yaxes(**AXIS_STYLE)
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        st.plotly_chart(fig_cmp, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="chart-card" style="height:200px">
+          <div class="empty-state" style="padding-top:40px">
+            <div class="empty-state-icon">⚡</div>
+            Run baseline + AI loop to compare.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Setpoint trend (AI cycles)
+    st.markdown("""
+    <div class="section-header" style="margin-top:24px">
+      <div class="section-header-icon">🎯</div>
+      <span class="section-title">Setpoint Trend</span>
+      <div class="section-line"></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    ai_results_df = load_db_table("ai_results")
+
+    if not ai_results_df.empty and "final_temp" in ai_results_df.columns:
+        ai_results_df = ai_results_df.sort_values("cycle") if "cycle" in ai_results_df.columns else ai_results_df
+        cycles = ai_results_df.get("cycle", range(len(ai_results_df)))
+        temps_ai = ai_results_df["final_temp"]
+
+        fig_sp = go.Figure()
+        fig_sp.add_hrect(y0=21, y1=24, fillcolor="rgba(104,211,145,0.06)", line_width=0)
+        fig_sp.add_trace(go.Scatter(
+            x=list(cycles), y=list(temps_ai),
+            mode="lines+markers",
+            name="AI Setpoint",
+            line=dict(color="#4299e1", width=2),
+            marker=dict(size=7, color="#4299e1", line=dict(color="#0a0e1a", width=1.5)),
+            hovertemplate="Cycle %{x}: %{y:.1f}°C<extra></extra>",
+            fill="tozeroy",
+            fillcolor="rgba(66,153,225,0.04)",
+        ))
+        fig_sp.update_layout(**PLOTLY_LAYOUT, height=200)
+        fig_sp.update_xaxes(title=dict(text="Cycle", font=dict(size=10)), dtick=1, **AXIS_STYLE)
+        fig_sp.update_yaxes(title=dict(text="°C", font=dict(size=10)), range=[19, 26], **AXIS_STYLE)
+        st.markdown('<div class="chart-card">', unsafe_allow_html=True)
+        st.plotly_chart(fig_sp, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="chart-card" style="height:160px">
+          <div class="empty-state" style="padding-top:30px">
+            <div>No AI cycle data yet.</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ⑥ Simulation Status detail
+# ---------------------------------------------------------------------------
+st.markdown("""
+<div class="section-header">
+  <div class="section-header-icon">🔬</div>
+  <span class="section-title">Simulation Details</span>
+  <div class="section-line"></div>
+</div>
+""", unsafe_allow_html=True)
+
+c1, c2, c3 = st.columns(3)
+
+def stat_card(icon, title, value, sub, border_color="#4299e1"):
+    return f"""
+    <div class="ov-card" style="border-top: 2px solid {border_color}; padding-top:14px">
+      <div class="ov-card-icon">{icon}</div>
+      <div class="ov-card-label">{title}</div>
+      <div class="ov-card-value">{value}</div>
+      <div class="ov-card-sub">{sub}</div>
+    </div>
+    """
+
+with c1:
+    base_v, base_u = joules_to_display(base_energy_j)
+    st.markdown(stat_card("📊", "Baseline Energy", f"{base_v} {base_u}", "Fixed-schedule run", "#4a5568"), unsafe_allow_html=True)
+with c2:
+    ai_v, ai_u = joules_to_display(ai_energy_j)
+    st.markdown(stat_card("🤖", "AI-Controlled Energy", f"{ai_v} {ai_u}", f"{ai_cycles} cycles logged", "#4299e1"), unsafe_allow_html=True)
+with c3:
+    cv = comfort_viol if comfort_viol is not None else "—"
+    st.markdown(stat_card("🎯", "Comfort Violations", str(cv), "Setpoints outside 21–24°C", "#9f7aea"), unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# ⑦ Footer
+# ---------------------------------------------------------------------------
+st.markdown("""
+<div class="footer">
+  <div class="footer-left">
+    <strong style="color:#e2e8f0">EcoLoop-AI</strong> &nbsp;·&nbsp;
+    Smart Building Energy Optimization &nbsp;·&nbsp;
+    <span style="color:#4a5568">Hackathon Project 2026</span>
+  </div>
+  <div class="footer-stack">
+    <span class="tech-pill">⚡ EnergyPlus 26.1</span>
+    <span class="tech-pill">🕸 LangGraph</span>
+    <span class="tech-pill">🦙 Ollama · Qwen 2.5</span>
+    <span class="tech-pill">🔌 MCP</span>
+    <span class="tech-pill">🐍 Python</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)  # close page-wrap

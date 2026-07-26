@@ -1,0 +1,191 @@
+"""
+generate_arch_diagram.py — generates docs/architecture.png and docs/architecture.svg
+Run once: python generate_arch_diagram.py
+Requires: pip install matplotlib (already in venv)
+"""
+import os
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+import matplotlib.patheffects as pe
+
+OUT_DIR = os.path.join(os.path.dirname(__file__), "docs")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# ── Color palette ──────────────────────────────────────────────────────────
+BG        = "#0a0e1a"
+CARD_BG   = "#111827"
+BORDER    = "#1e293b"
+BLUE      = "#4299e1"
+GREEN     = "#48bb78"
+PURPLE    = "#9f7aea"
+ORANGE    = "#ed8936"
+RED       = "#fc8181"
+YELLOW    = "#f6ad55"
+TEXT_HI   = "#e2e8f0"
+TEXT_LO   = "#718096"
+ARROW     = "#334155"
+ACCENT    = "#63b3ed"
+
+fig, ax = plt.subplots(figsize=(14, 18), facecolor=BG)
+ax.set_xlim(0, 14)
+ax.set_ylim(0, 18)
+ax.axis("off")
+fig.patch.set_facecolor(BG)
+
+def card(x, y, w, h, label, sublabel="", color=BLUE, icon=""):
+    """Draw a rounded card."""
+    box = FancyBboxPatch(
+        (x, y), w, h,
+        boxstyle="round,pad=0.1",
+        facecolor=CARD_BG, edgecolor=color, linewidth=1.5,
+        zorder=3,
+    )
+    ax.add_patch(box)
+    # Top accent bar
+    bar = FancyBboxPatch(
+        (x + 0.05, y + h - 0.12), w - 0.1, 0.12,
+        boxstyle="round,pad=0.0",
+        facecolor=color, edgecolor="none", linewidth=0, zorder=4,
+    )
+    ax.add_patch(bar)
+    # Icon + label
+    if icon:
+        ax.text(x + 0.3, y + h/2 + 0.05, icon,
+                ha="left", va="center", fontsize=13, color=color, zorder=5)
+        ax.text(x + 0.75, y + h/2 + 0.1, label,
+                ha="left", va="center", fontsize=11, fontweight="bold",
+                color=TEXT_HI, zorder=5)
+    else:
+        ax.text(x + w/2, y + h/2 + 0.1, label,
+                ha="center", va="center", fontsize=11, fontweight="bold",
+                color=TEXT_HI, zorder=5)
+    if sublabel:
+        tx = x + (0.75 if icon else w/2)
+        ax.text(tx, y + h/2 - 0.22, sublabel,
+                ha="left" if icon else "center", va="center",
+                fontsize=8, color=TEXT_LO, zorder=5)
+
+def arrow(x1, y1, x2, y2, color=ARROW):
+    ax.annotate("",
+        xy=(x2, y2), xycoords="data",
+        xytext=(x1, y1), textcoords="data",
+        arrowprops=dict(
+            arrowstyle="-|>",
+            color=color,
+            lw=1.5,
+            connectionstyle="arc3,rad=0.0",
+        ),
+        zorder=2,
+    )
+
+def label_arrow(x, y, text, color=TEXT_LO):
+    ax.text(x, y, text, ha="center", va="center",
+            fontsize=7.5, color=color,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=BG, edgecolor="none"),
+            zorder=6)
+
+# ── Title ──────────────────────────────────────────────────────────────────
+ax.text(7, 17.5, "EcoLoop-AI", ha="center", va="center",
+        fontsize=22, fontweight="bold", color=TEXT_HI, zorder=5)
+ax.text(7, 17.1, "Multi-Agent Smart Building Energy Optimization System",
+        ha="center", va="center", fontsize=11, color=TEXT_LO, zorder=5)
+
+# ── Row 1: EnergyPlus ─────────────────────────────────────────────────────
+card(4, 15.7, 6, 0.95, "EnergyPlus 26.1", "DOE Medium Office | Chicago EPW", BLUE, "[SIM]")
+
+# ── Row 2: Simulation ─────────────────────────────────────────────────────
+arrow(7, 15.7, 7, 15.05)
+label_arrow(7.7, 15.38, "IDF run")
+card(4, 14.1, 6, 0.9, "Simulation Runner", "sim_runner/eplus_interface.py", GREEN, "[RUN]")
+
+# ── Row 3: State Reader ───────────────────────────────────────────────────
+arrow(7, 14.1, 7, 13.45)
+label_arrow(7.85, 13.78, "CSV output")
+card(4, 12.5, 6, 0.9, "State Reader + MCP Tools", "zone_temps / energy_kwh / outdoor_temp_c / carbon_kg_co2", PURPLE, "[MCP]")
+
+# ── Row 4: LangGraph ─────────────────────────────────────────────────────
+arrow(7, 12.5, 7, 11.85)
+label_arrow(7.7, 12.18, "BuildingState")
+card(4, 11.0, 6, 0.8, "LangGraph StateGraph", "Sequential node chain | qwen2.5:3b via Ollama", ORANGE, "[LG] ")
+
+# ── Row 5: 4 agents ──────────────────────────────────────────────────────
+arrow(7, 11.0, 7, 10.4)
+
+# Spread arrows from centre to 4 agents
+for xc in [1.2, 4.0, 7.5, 10.8]:
+    ax.annotate("", xy=(xc+1.3, 9.85), xycoords="data",
+                xytext=(7, 10.4), textcoords="data",
+                arrowprops=dict(arrowstyle="-|>", color=ARROW, lw=1.2,
+                                connectionstyle="arc3,rad=0.0"), zorder=2)
+
+card(0.4, 8.9, 2.8, 0.9, "Comfort Agent", "PMV / zone temps", BLUE, "[CMF]")
+card(3.4, 8.9, 2.8, 0.9, "Energy Agent", "kWh / setpoint", GREEN, "[NRG]")
+card(6.5, 8.9, 2.8, 0.9, "Weather Agent", "outdoor_temp_c", YELLOW, "[WTH]")
+card(9.5, 8.9, 3.1, 0.9, "Carbon Agent", "carbon_kg_co2 / 0.386 kgCO2/kWh", PURPLE, "[CO2]")
+
+# Fan-in arrows to coordinator
+for xc in [1.8, 4.8, 7.9, 11.05]:
+    ax.annotate("", xy=(7, 7.9), xycoords="data",
+                xytext=(xc, 8.9), textcoords="data",
+                arrowprops=dict(arrowstyle="-|>", color=ARROW, lw=1.2,
+                                connectionstyle="arc3,rad=0.0"), zorder=2)
+
+# ── Row 6: Coordinator ───────────────────────────────────────────────────
+card(4, 7.0, 6, 0.85, "Coordinator Agent", "Merges 4 recs -> 1 final_temp (21-24 C clamped)", RED, "[CRD]")
+
+# ── Row 7: Apply Setpoints ───────────────────────────────────────────────
+arrow(7, 7.0, 7, 6.35)
+label_arrow(7.8, 6.68, "final_temp")
+card(4, 5.4, 6, 0.9, "Apply Setpoints", "Plain-text IDF edit (CLGSETP_SCH) | no Eppy", ORANGE, "[SET]")
+
+# ── Row 8: EnergyPlus (loop back) ────────────────────────────────────────
+arrow(7, 5.4, 7, 4.75)
+label_arrow(7.8, 5.08, "updated IDF")
+card(4, 3.85, 6, 0.85, "EnergyPlus (next cycle)", "Runs with updated HVAC setpoint", BLUE, "[<->]")
+
+# ── Loop-back arrow ──────────────────────────────────────────────────────
+ax.annotate("",
+    xy=(4.0, 16.17), xycoords="data",
+    xytext=(2.2, 4.27), textcoords="data",
+    arrowprops=dict(arrowstyle="-|>", color=ACCENT, lw=1.5,
+                    connectionstyle="arc3,rad=-0.3"),
+    zorder=2,
+)
+ax.text(1.0, 10.2, "Closed Loop", ha="center", va="center",
+        fontsize=9, color=ACCENT, fontweight="bold", rotation=90,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor=BG, edgecolor=ACCENT, linewidth=0.8),
+        zorder=6)
+
+# ── Row 9: SQLite log ────────────────────────────────────────────────────
+arrow(7, 3.85, 7, 3.2)
+card(5.2, 2.3, 3.6, 0.85, "SQLite Log", "data/results.db / agent_decisions", TEXT_LO, "[DB] ")
+
+# ── Row 10: Dashboard ────────────────────────────────────────────────────
+arrow(7, 2.3, 7, 1.65)
+card(4, 0.7, 6, 0.9, "Streamlit Dashboard", "Real-time KPIs / Timeline / Charts", GREEN, "[UI] ")
+
+# ── Legend ────────────────────────────────────────────────────────────────
+legend_items = [
+    (BLUE,   "Simulation / EnergyPlus"),
+    (GREEN,  "Data Pipeline / Dashboard"),
+    (PURPLE, "MCP Tool Layer"),
+    (ORANGE, "LangGraph / HVAC Control"),
+    (ACCENT, "Closed control loop"),
+]
+for i, (col, lbl) in enumerate(legend_items):
+    ax.plot(9.5, 3.9 - i*0.38, "s", color=col, markersize=8, zorder=5)
+    ax.text(9.85, 3.9 - i*0.38, lbl, va="center", fontsize=8, color=TEXT_LO, zorder=5)
+
+ax.text(9.4, 4.25, "Legend", fontsize=9, fontweight="bold", color=TEXT_HI, zorder=5)
+
+plt.tight_layout(pad=0.2)
+
+out_png = os.path.join(OUT_DIR, "architecture.png")
+out_svg = os.path.join(OUT_DIR, "architecture.svg")
+fig.savefig(out_png, dpi=150, bbox_inches="tight", facecolor=BG)
+fig.savefig(out_svg, format="svg", bbox_inches="tight", facecolor=BG)
+plt.close()
+print(f"Saved:\n  {out_png}\n  {out_svg}")

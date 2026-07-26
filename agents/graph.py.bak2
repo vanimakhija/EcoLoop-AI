@@ -1,0 +1,211 @@
+"""
+graph.py — the full multi-agent closed loop: Comfort, Energy, Occupancy,
+and Carbon agents each give a recommendation; a Supervisor node merges
+them into one final decision; the decision is applied to EnergyPlus;
+repeat.
+
+Build and pass single_agent_loop.py FIRST. This file follows the same
+pattern, just with more reasoning steps per cycle.
+
+Uses LangGraph's StateGraph so the whole flow is visualizable and matches
+the architecture diagram you'll put in your presentation.
+"""
+
+import sys
+import os
+import json
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from typing import TypedDict, Optional
+from langgraph.graph import StateGraph, END
+from langchain_ollama import ChatOllama
+
+from mcp_server.tools import (
+    tool_get_building_state,
+    tool_set_hvac_setpoint,
+    tool_run_simulation,
+    tool_log_decision,
+)
+from agents.prompts import (
+    COMFORT_AGENT_PROMPT,
+    ENERGY_AGENT_PROMPT,
+    WEATHER_AGENT_PROMPT,
+    CARBON_AGENT_PROMPT,
+    COORDINATOR_PROMPT,
+)
+
+MODEL_NAME = "qwen2.5:3b"
+N_CYCLES = 5
+TEMP_MIN, TEMP_MAX = 21.0, 24.0
+
+llm = ChatOllama(model=MODEL_NAME, format="json")
+
+
+# ---------------------------------------------------------------------------
+# Shared state object passed between every node in the graph
+# ---------------------------------------------------------------------------
+class BuildingState(TypedDict):
+    building_state: dict
+    comfort_rec: Optional[dict]
+    energy_rec: Optional[dict]
+    weather_rec: Optional[dict]
+    carbon_rec: Optional[dict]
+    final_decision: Optional[dict]
+    cycle: int
+
+
+def _ask_agent(system_prompt: str, state_dict: dict) -> dict:
+    user_msg = f"Current building state: {json.dumps(state_dict, default=str)}"
+    response = llm.invoke([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ])
+    try:
+        return json.loads(response.content)
+    except json.JSONDecodeError:
+        return {"recommendation": 22.5, "rationale": "fallback: non-JSON model output"}
+
+
+# ---------------------------------------------------------------------------
+# Nodes
+# ---------------------------------------------------------------------------
+def node_fetch_state(state: BuildingState) -> BuildingState:
+    state["building_state"] = tool_get_building_state()
+    return state
+
+
+def node_comfort_agent(state: BuildingState) -> BuildingState:
+    state["comfort_rec"] = _ask_agent(COMFORT_AGENT_PROMPT, state["building_state"])
+    return state
+
+
+def node_energy_agent(state: BuildingState) -> BuildingState:
+    state["energy_rec"] = _ask_agent(ENERGY_AGENT_PROMPT, state["building_state"])
+    return state
+
+
+def node_weather_agent(state: BuildingState) -> BuildingState:
+    state["weather_rec"] = _ask_agent(WEATHER_AGENT_PROMPT, state["building_state"])
+    return state
+
+
+def node_carbon_agent(state: BuildingState) -> BuildingState:
+    state["carbon_rec"] = _ask_agent(CARBON_AGENT_PROMPT, state["building_state"])
+    return state
+
+
+def node_coordinator(state: BuildingState) -> BuildingState:
+    combined_input = {
+        "comfort_agent": state["comfort_rec"],
+        "energy_agent": state["energy_rec"],
+        "weather_agent": state["weather_rec"],
+        "carbon_agent": state["carbon_rec"],
+    }
+    user_msg = f"Agent recommendations: {json.dumps(combined_input, default=str)}"
+    response = llm.invoke([
+        {"role": "system", "content": COORDINATOR_PROMPT},
+        {"role": "user", "content": user_msg},
+    ])
+    try:
+        decision = json.loads(response.content)
+    except json.JSONDecodeError:
+        decision = {"final_temp": 22.5, "rationale": "fallback: coordinator non-JSON output"}
+
+    final_temp = float(decision.get("final_temp", 22.5))
+    final_temp = max(TEMP_MIN, min(TEMP_MAX, final_temp))  # safety clamp
+    decision["final_temp"] = final_temp
+
+    state["final_decision"] = decision
+
+    # Log every agent's input AND the final call, for the dashboard reasoning feed
+    for agent_name, rec in combined_input.items():
+        tool_log_decision(agent_name, rec.get("rationale", ""), f"recommended {rec.get('recommendation')}")
+    tool_log_decision("coordinator", decision.get("rationale", ""), f"final_temp={final_temp}")
+
+    return state
+
+
+def node_apply_and_run(state: BuildingState) -> BuildingState:
+    import sqlite3
+    import datetime
+
+    final_temp = state["final_decision"]["final_temp"]
+    tool_set_hvac_setpoint("Core_mid", final_temp)
+    new_state = tool_run_simulation()
+
+    # Log per-cycle energy so compute_savings.py can compare against baseline
+    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "results.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_results (
+            timestamp TEXT, cycle INTEGER, energy_kw REAL, final_temp REAL, raw_state TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO ai_results VALUES (?, ?, ?, ?, ?)",
+        (datetime.datetime.now().isoformat(), state["cycle"], new_state.get("energy_kw"),
+         final_temp, str(new_state))
+    )
+    conn.commit()
+    conn.close()
+
+    state["cycle"] += 1
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Build the graph
+# ---------------------------------------------------------------------------
+def build_graph():
+    graph = StateGraph(BuildingState)
+
+    graph.add_node("fetch_state", node_fetch_state)
+    graph.add_node("comfort_agent", node_comfort_agent)
+    graph.add_node("energy_agent", node_energy_agent)
+    graph.add_node("weather_agent", node_weather_agent)
+    graph.add_node("carbon_agent", node_carbon_agent)
+    graph.add_node("coordinator", node_coordinator)
+    graph.add_node("apply_and_run", node_apply_and_run)
+
+    graph.set_entry_point("fetch_state")
+
+    # Sequential chain: each agent runs after the previous
+    # (LangGraph LastValue channels don't support concurrent fan-out writes)
+    graph.add_edge("fetch_state", "comfort_agent")
+    graph.add_edge("comfort_agent", "energy_agent")
+    graph.add_edge("energy_agent", "weather_agent")
+    graph.add_edge("weather_agent", "carbon_agent")
+    graph.add_edge("carbon_agent", "coordinator")
+
+    graph.add_edge("coordinator", "apply_and_run")
+    graph.add_edge("apply_and_run", END)
+
+    return graph.compile()
+
+
+def run_loop():
+    # Ensure data/ dir exists
+    os.makedirs(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"), exist_ok=True)
+
+    # Bootstrap: run initial simulation if no output CSV exists
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "energyplus", "current_run", "eplusout.csv")
+    if not os.path.exists(csv_path):
+        print("Running bootstrap simulation...")
+        tool_run_simulation()
+
+    app = build_graph()
+    for cycle in range(N_CYCLES):
+        print(f"\n=== Cycle {cycle + 1}/{N_CYCLES} ===")
+        result = app.invoke({
+            "building_state": {}, "comfort_rec": None, "energy_rec": None,
+            "weather_rec": None, "carbon_rec": None, "final_decision": None,
+            "cycle": cycle,
+        })
+        print("Final decision:", result["final_decision"])
+
+    print("\nMulti-agent loop complete. Check data/results.db for the full decision log.")
+
+
+if __name__ == "__main__":
+    run_loop()
